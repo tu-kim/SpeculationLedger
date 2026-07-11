@@ -37,11 +37,17 @@ def test_gates_json_byte_identical_across_runs(smoke_doc, tmp_path):
 
 
 def test_gates_json_matches_committed_golden(smoke_doc):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from normalize_golden import normalize
+
     _, out1 = smoke_doc
-    got = (out1 / "synth_smoke" / "gates.json").read_bytes()
+    # git_hash는 커밋마다 정당하게 변한다 — 계산 결정성만 golden으로 고정 (§8 기록은 results/가 짐)
+    got = normalize((out1 / "synth_smoke" / "gates.json").read_bytes())
     if not GOLDEN.exists():
         pytest.skip("golden 미생성 — `make golden` 후 커밋 필요")
-    want = GOLDEN.read_bytes()
+    want = normalize(GOLDEN.read_bytes())
     if got != want:
         # 어디가 다른지 요약해서 실패 메시지에 제공
         g, w = json.loads(got), json.loads(want)
