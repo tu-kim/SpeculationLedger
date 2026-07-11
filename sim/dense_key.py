@@ -34,7 +34,6 @@ class _RepoIndex:
         self.trained_ivf = False
         self.stream: list[int] = []  # repo 단위 realized corpus (세션 경계 넘어 연결)
         self.offsets: list[int] = []  # faiss id → stream 끝 위치
-        self._pending: list[np.ndarray] = []
 
     def _maybe_upgrade(self) -> None:
         if not self.use_ivfpq or self.trained_ivf:

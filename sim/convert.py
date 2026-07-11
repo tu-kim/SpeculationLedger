@@ -90,6 +90,10 @@ def validate_record(rec: dict) -> list[str]:
                     errs.append(
                         f"steps[{i}] {name} 길이 {len(st[name])} != realized {n_real}"
                     )
+            for r_i, (ids_row, q_row) in enumerate(zip(st["topk_ids"], st["topk_logp_q8"])):
+                if len(ids_row) != len(q_row):
+                    errs.append(f"steps[{i}] topk row {r_i}: ids/logp_q8 길이 불일치")
+                    break
             for q_row in st["topk_logp_q8"]:
                 if any(not (0 <= q <= 255) for q in q_row):
                     errs.append(f"steps[{i}] topk_logp_q8 out of q8 range")

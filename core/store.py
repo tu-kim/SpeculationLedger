@@ -260,6 +260,8 @@ class LedgerStore:
                 if s.epoch != self._epoch_now(s.scope_id, s.dom):
                     self._stats.stale_skips += 1
                     continue
+                if s.seg != int(seg):
+                    continue  # fold 충돌 가드 (hot 테이블과 동일)
                 rank = (s.count, s.length, -key)
                 if best is None or rank > (best.count, best.length, -best.key):
                     best = s
@@ -316,6 +318,11 @@ class LedgerStore:
             self._hot[key] = e
         elif e.epoch != self._epoch_now(e.scope_id, e.dom):
             e.reset(now, dom)  # stale 엔트리 재사용: write 시점 재검증
+        elif dom and e.dom != dom:
+            # epoch domain은 '최근 관측'의 파일을 따른다 — 최초-기록자 고착이면
+            # 나중 파일의 편집이 이 엔트리를 영영 무효화하지 못한다 (stale 위험)
+            e.dom = dom
+            e.epoch = now
         return e
 
     def _apply(self, ev: VerifyOutcome) -> None:
@@ -335,6 +342,7 @@ class LedgerStore:
             span_at_start = self._find_span_entry(sigs.stack_list(), scope_ids, seg0)
 
         patch_key = 0
+        patch_rank = (-1, -1)
         for pos in range(len(realized)):
             seg_p = seg_arr[min(pos, len(seg_arr) - 1)] if seg_arr else int(Segment.TEXT)
             dom = ev.file_id if seg_p == int(Segment.CODE) else 0
@@ -356,8 +364,10 @@ class LedgerStore:
                         e.update_rejected(ev.draft_ids[pos], p.k_max)
                     if pos < len(ev.topk_ids):
                         e.merge_topk(ev.topk_ids[pos], ev.topk_logp_q8[pos], p.k_max)
-                    if is_reject_pos and depth == 0 and i == len(stack) - 1:
-                        patch_key = key  # 최장 차수·session tier의 correction 엔트리
+                    if is_reject_pos and (order, -depth) > patch_rank:
+                        # 실제 probe된 조합 중 최장 차수·최심 tier의 correction 엔트리
+                        patch_rank = (order, -depth)
+                        patch_key = key
 
             if p.version >= 2:
                 self._track_run(ev, sigs, seg_p, dom, tok, scope_ids)
@@ -395,7 +405,11 @@ class LedgerStore:
                     continue
                 key = fmix64(fold_key(sig, order, scope_id, seg) ^ _SPAN_SALT)
                 s = self._spans.get(key)
-                if s is not None and s.epoch == self._epoch_now(s.scope_id, s.dom):
+                if (
+                    s is not None
+                    and s.epoch == self._epoch_now(s.scope_id, s.dom)
+                    and s.seg == seg
+                ):
                     # lookup_span과 동일한 랭킹 — break 기록과 조회가 같은 엔트리를 보도록
                     if best is None or (s.count, s.length, -s.key) > (
                         best.count,
@@ -460,8 +474,19 @@ class LedgerStore:
                         s.epoch = self._epoch_now(scope_id, run.dom)
                         s.dom = run.dom
                         s.count = 0
-                    # 더 길거나 최신 관측이면 span 본문 갱신 (break off 유지: 동일 컨텍스트)
+                    # 더 길거나 최신 관측이면 span 본문 갱신. break 히스토그램은 내용
+                    # 동일성에 종속 — 새 내용과 갈라지는 지점(d) 이후의 break는 무효
                     if length >= s.length:
+                        if s.arena_off != off:
+                            old = self._arena.get(s.arena_off, s.length)
+                            d = 0
+                            for d in range(min(len(old), length)):  # noqa: B007
+                                if old[d] != run.tokens[d]:
+                                    break
+                            else:
+                                d = min(len(old), length)
+                            for boff in [b for b in s.breaks if b >= d]:
+                                del s.breaks[boff]
                         s.arena_off, s.length = off, length
                     s.count += 1
 
@@ -512,6 +537,13 @@ class LedgerStore:
 
     # ----------------------------------------------------------- persistence
     def snapshot(self, path: str) -> None:
+        """영속 상태만 저장한다: hot/span 테이블, arena, epoch 테이블.
+
+        저장하지 않는 것: stats 카운터(관측치), harvest 큐(미반영 이벤트 —
+        호출측이 drain 후 snapshot해야 한다), run 버퍼(flush_runs로 확정 후 저장).
+        cov_ema는 전체 정밀도로 저장한다 — 반올림하면 load 후 이어가기가
+        무중단 실행과 어긋난다.
+        """
         doc = {
             "schema": _SNAPSHOT_SCHEMA,
             "version": self.params.version,
@@ -523,7 +555,7 @@ class LedgerStore:
                     "scope_id": e.scope_id,
                     "epoch": e.epoch,
                     "k_cap": e.k_cap,
-                    "cov": round(e.cov_ema, 6),
+                    "cov": e.cov_ema,  # 전체 정밀도 (json float repr는 정확 왕복)
                     "cands": {str(t): c for t, c in e.cands.items()},
                 }
                 for e in self._hot.values()

@@ -54,7 +54,15 @@ def _round_floats(obj, nd: int = 6):
 
 
 def canonical_json(doc: dict) -> str:
-    return json.dumps(_round_floats(doc), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    # allow_nan=False: NaN/Inf가 섞이면 비표준 JSON이 조용히 생성된다 — 즉시 실패시켜
+    # 산식 버그(0/0 등)를 표면화한다 (I4는 '유효한' byte-동일을 요구한다)
+    return json.dumps(
+        _round_floats(doc),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
 
 
 def _git_hash() -> str:
@@ -76,23 +84,29 @@ def _resolve_traces(cfg: dict) -> tuple[list[str], dict]:
     tr = cfg["trace"]
     paths = tr.get("paths", [])
     import glob as _g
+    from dataclasses import asdict
 
     have = [p for pat in paths for p in _g.glob(pat)]
     meta = {}
+    synth = tr.get("synth")
+
+    if have:
+        meta_path = have[0] + ".meta.json"
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        # 재현성 가드(§0.3): synth 설정이 기존 파일의 생성 파라미터와 다르면
+        # 조용히 stale trace를 재사용하지 않고 재생성한다
+        if synth and meta.get("params") != asdict(SynthParams.from_dict(synth)):
+            have = []
+
     if not have:
-        synth = tr.get("synth")
         if not synth:
             raise FileNotFoundError(f"traces not found and no synth params: {paths}")
         out = paths[0] if paths else "traces/synth/auto.jsonl"
         os.makedirs(os.path.dirname(out), exist_ok=True)
         meta = generate(SynthParams.from_dict(synth), out)
-        have = [out]
         paths = [out]
-    else:
-        meta_path = have[0] + ".meta.json"
-        if os.path.exists(meta_path):
-            with open(meta_path, encoding="utf-8") as f:
-                meta = json.load(f)
     return paths, meta
 
 
@@ -192,6 +206,22 @@ def _judge(cfg, thresholds, recur, by_role, sweep) -> dict:
             "tau_a": ta,
             "tau_b": tb,
         }
+
+    # 요청됐지만 판정 불가한 gate는 무음 누락 대신 명시적으로 기록한다
+    for g in want:
+        if g not in gates:
+            need = {
+                "G2": "role=a proposer",
+                "G3": "size_sweep 블록",
+                "G-R1": "role=a·b proposer",
+            }.get(g, "필요 입력")
+            gates[g] = {
+                "value": None,
+                "threshold": None,
+                "pass": False,
+                "skipped": True,
+                "metric": f"판정 불가 — config에 {need} 없음",
+            }
     return gates
 
 
@@ -282,6 +312,9 @@ def run(config_path: str, out_root: str = "results", plots: bool = True) -> dict
     print(f"[{exp_id}] provenance={doc['trace_provenance']} tokens={doc['trace']['tokens']}")
     for g in sorted(gates):
         r = gates[g]
+        if r.get("skipped"):
+            print(f"  {g}: SKIPPED ({r['metric']})")
+            continue
         print(
             f"  {g}: {'PASS' if r['pass'] else 'FAIL'}  value={r['value']:.4f} "
             f"thr={r['threshold']} ({r['metric']})"
