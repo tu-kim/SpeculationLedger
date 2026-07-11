@@ -1,0 +1,30 @@
+// OpenCode provider 설정 템플릿 — SpecLedger 서빙 엔드포인트 연결 (D1 확정 반영)
+// 사용: 값 치환 후 프로젝트 루트에 opencode.json으로 배치하거나 OPENCODE_CONFIG로 지정.
+// {env:VAR}는 OpenCode가 로드 시 치환한다. per-instance 값은 러너가 env로 주입한다
+// (bench/opencode/run_instance.sh). session은 자동 헤더(X-Session-Id)로 전달된다.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "specledger": {
+      // /v1/chat/completions 호환 경로 (Dynamo frontend 또는 vLLM 직결, D5)
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SpecLedger serving",
+      "options": {
+        "baseURL": "{env:SPECLEDGER_BASE_URL}",
+        "apiKey": "{env:SPECLEDGER_API_KEY}",
+        "headers": {
+          "X-SpecLedger-Tenant": "{env:SPECLEDGER_TENANT}",
+          "X-SpecLedger-Repo": "{env:SPECLEDGER_REPO}",
+          "X-SpecLedger-Instance": "{env:SPECLEDGER_INSTANCE}"
+        }
+      },
+      "models": {
+        "target": {
+          "name": "SpecLedger target model",
+          "limit": { "context": 131072, "output": 32768 }
+        }
+      }
+    }
+  },
+  "model": "specledger/target"
+}
