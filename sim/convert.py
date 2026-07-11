@@ -78,8 +78,13 @@ def validate_record(rec: dict) -> list[str]:
                 break
         else:
             n_real = st["accepted_len"] + 1
+            if st["accepted_len"] < 0:
+                errs.append(f"steps[{i}] accepted_len < 0")
+                continue
             if st["accepted_len"] > len(st["proposed"]):
                 errs.append(f"steps[{i}] accepted_len > len(proposed)")
+            if any(not (0 <= s <= 3) for s in st["seg"]):
+                errs.append(f"steps[{i}] seg out of range (0..3)")
             for name in ("topk_ids", "topk_logp_q8", "seg"):
                 if len(st[name]) not in (n_real, 0):
                     errs.append(

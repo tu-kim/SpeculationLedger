@@ -39,8 +39,12 @@ def sig_of(tokens: list[int] | tuple[int, ...]) -> int:
 
 
 def fold_key(sig: int, order: int, scope_id: int, seg: int) -> int:
-    """HotEntry 키: suffix hash ⊕ scope ⊕ seg (+order salt) → fmix64 (§3.1)."""
-    return fmix64(sig ^ _ORDER_SALT[order] ^ scope_id ^ _SEG_SALT[seg])
+    """HotEntry 키: suffix hash ⊕ scope ⊕ seg (+order salt) → fmix64 (§3.1).
+
+    seg는 hdr의 2-bit 필드(§3.1)와 동일하게 하위 2비트만 사용한다 — 범위 밖 값이
+    키 공간을 벗어나 크래시하는 대신 native 레이아웃과 같은 방식으로 접힌다.
+    """
+    return fmix64(sig ^ _ORDER_SALT[order] ^ scope_id ^ _SEG_SALT[seg & 3])
 
 
 class RollingSigStack:

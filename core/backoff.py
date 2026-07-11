@@ -95,7 +95,9 @@ def blend(params: BackoffParams, sources: list[Source]) -> Posterior | None:
             slot[1] += w_hi * acc_rate
             slot[2] += w_hi * (pr / z)
             slot[3] += w_hi
-            slot[4] += a + r
+            # support = 최강 단일 소스의 관측 수. 같은 물리적 관측이 (차수×scope)개
+            # 소스에 중복 계상되므로 합산하면 증거량이 ~21배 과대보고된다.
+            slot[4] = max(slot[4], a + r)
 
     if not acc_w:
         return None

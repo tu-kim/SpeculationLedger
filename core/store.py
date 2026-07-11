@@ -216,6 +216,8 @@ class LedgerStore:
         sources: list[Source] = []
         for i, sig in enumerate(sig_stack):
             order = MIN_ORDER + i
+            if order > MAX_ORDER:
+                break  # 계약: sig_stack[i] ↔ 차수 MIN+i — 초과분은 무시
             if order not in p.orders:
                 continue
             for depth, scope_id in enumerate(scope_stack):
@@ -246,6 +248,8 @@ class LedgerStore:
         best: SpanEntry | None = None
         for i, sig in enumerate(sig_stack):
             order = MIN_ORDER + i
+            if order > MAX_ORDER:
+                break
             for depth, scope_id in enumerate(scope_stack):
                 if depth not in self.params.scope_depths:
                     continue
@@ -267,9 +271,15 @@ class LedgerStore:
 
     # ---------------------------------------------------------------- harvest
     def harvest(self, events: list[VerifyOutcome]) -> None:
-        """enqueue만 한다 — 절대 블로킹 금지. 포화 시 drop-oldest + 카운터 (§3.1)."""
+        """enqueue만 한다 — 절대 블로킹 금지. 포화 시 drop-oldest + 카운터 (§3.1).
+
+        queue_cap <= 0 은 '큐 비활성' — 모든 이벤트를 드롭하고 카운트만 남긴다.
+        """
         q = self._queue
         cap = self.params.queue_cap
+        if cap <= 0:
+            self._stats.drops += len(events)
+            return
         for e in events:
             if len(q) >= cap:
                 q.popleft()
@@ -378,6 +388,8 @@ class LedgerStore:
         best: SpanEntry | None = None
         for i, sig in enumerate(sig_stack):
             order = MIN_ORDER + i
+            if order > MAX_ORDER:
+                break
             for depth, scope_id in enumerate(scope_ids):
                 if depth not in self.params.scope_depths:
                     continue

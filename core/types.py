@@ -80,6 +80,11 @@ _Q8_SCALE = 16.0
 
 
 def logp_to_q8(logp: float) -> int:
+    # 온라인 harvester 경계: -inf(확률 0)·NaN은 최저 신뢰(255), +inf는 0으로 고정
+    if logp != logp or logp == float("-inf"):
+        return 255
+    if logp == float("inf"):
+        return 0
     q = round(-logp * _Q8_SCALE)
     return 0 if q < 0 else (255 if q > 255 else int(q))
 
@@ -134,7 +139,8 @@ class PosteriorCand:
     p_acc  : 이 위치·이 후보의 blend된 수락(=realized) 확률 추정 (Beta-smoothed acc/(acc+rej))
     p_hat  : blend된 target 분포 확률 p̂ — correction 분포는 별도 필드가 아니라 p̂ 자체다 (§3.1:
              greedy correction = p̂ argmax, T>0 correction 분포 = p̂).
-    support: blend에 기여한 관측 카운트 합 (acc+rej)
+    support: 최강 단일 소스의 관측 수 (acc+rej). 소스 간 합산이 아니다 — 같은 관측이
+             (차수×scope)개 소스에 중복 계상되는 것을 막는다.
     """
 
     tok: int

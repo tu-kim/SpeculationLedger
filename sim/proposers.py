@@ -105,14 +105,15 @@ class LedgerProposer(BaseProposer):
                     break
                 if off in heavy:
                     # break offset에서 budget pre-split: span 토큰과 correction(p̂ argmax)을
-                    # 형제로 splice하고 이 edge 이후 확장은 중단 (§3.2)
+                    # 형제로 splice하고 이 edge 이후 확장은 중단 (§3.2). budget 엄수.
                     tree.add(tok, parent)
-                    post = self.store.lookup(sims.stack_list(), ctx.scope_stack, ctx.seg)
-                    if post is not None and post.cands:
-                        patch = max(post.cands, key=lambda c: (c.p_hat, -c.tok))
-                        if patch.tok != tok:
-                            tree.add(patch.tok, parent)
-                            self.n_patches += 1
+                    if len(tree) < budget:
+                        post = self.store.lookup(sims.stack_list(), ctx.scope_stack, ctx.seg)
+                        if post is not None and post.cands:
+                            patch = max(post.cands, key=lambda c: (c.p_hat, -c.tok))
+                            if patch.tok != tok:
+                                tree.add(patch.tok, parent)
+                                self.n_patches += 1
                     return tree
                 parent = tree.add(tok, parent)
                 sims.push(tok)
@@ -131,15 +132,20 @@ class LedgerProposer(BaseProposer):
             if rej_dominant:
                 # reject-dominant edge(§3.2): 그 edge의 후속엔 budget 0 (leaf로만 남김),
                 # correction(p̂ argmax)을 splice해 체인은 patch를 통해 계속 이어간다 —
-                # 교정 후 미래는 다시 예측 가능하다는 OSD류 관찰의 구현.
+                # 교정 후 미래는 다시 예측 가능하다는 OSD류 관찰의 구현. budget 엄수:
+                # 남은 예산이 1이면 leaf 없이 patch(교정 기대값이 더 큼)만 넣는다.
                 patch = max(post.cands, key=lambda c: (c.p_hat, -c.tok))
                 if patch.tok != top.tok:
-                    tree.add(top.tok, parent)  # 수락 가능성 보존용 leaf (확장 없음)
+                    if budget - len(tree) >= 2:
+                        tree.add(top.tok, parent)  # 수락 가능성 보존용 leaf (확장 없음)
                     parent = tree.add(patch.tok, parent)
                     self.n_patches += 1
                     sims.push(patch.tok)
                     cum *= max(patch.p_acc, 0.05)
                     continue
+                # patch == top: 교정 분포도 같은 토큰 — leaf로만 남기고 중단 (budget 0)
+                tree.add(top.tok, parent)
+                break
             parent = tree.add(top.tok, parent)
             sims.push(top.tok)
             cum *= max(top.p_acc, 0.05)
