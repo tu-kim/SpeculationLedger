@@ -1,0 +1,18 @@
+# reference checkouts — pinned commit hashes live in docs/ENV.md, not in git
+third_party/
+
+# experiment outputs are reproducible from configs/*.yaml + git hash + seed (CLAUDE.md §0.3)
+results/
+!results/.gitkeep
+
+# traces carry tenant code (CLAUDE.md §10) — never commit; per-tenant isolation on disk
+traces/
+!traces/.gitkeep
+
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.DS_Store

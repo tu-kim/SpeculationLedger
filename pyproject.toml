@@ -1,0 +1,58 @@
+[project]
+name = "specledger"
+version = "0.0.1"
+description = "Speculation Ledger testbed: persistent verify-outcome ledger for speculative decoding (sim + online harness)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "pyarrow>=16.0",
+    "faiss-cpu>=1.8.0",
+]
+
+[project.optional-dependencies]
+analysis = ["matplotlib>=3.8", "pandas>=2.2"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Flat top-level packages, matching the contract's module names:
+# core.LedgerStore / sim.Replay / vllm_plugin.LedgerProposer (CLAUDE.md §3).
+[tool.setuptools]
+packages = ["core", "sim", "vllm_plugin", "bench", "analysis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "online: requires GPU + vLLM serving stack (Phase 1+); skipped on this host",
+    "slow: microbenchmarks and large synthetic runs",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "TID"]
+
+# I5 sim purity: torch/cuda must never be importable from core/ or sim/.
+# ruff banned-api is the first line of defense; tests/test_i5_purity.py is the AST backstop.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"torch".msg = "I5: torch is banned in core/ and sim/ (CLAUDE.md §9)"
+"cupy".msg = "I5: cuda libs are banned in core/ and sim/"
+"tensorflow".msg = "I5: banned in core/ and sim/"
+"vllm".msg = "vllm may only be imported from vllm_plugin/ (Phase 1+)"
+
+[tool.ruff.lint.per-file-ignores]
+# vllm_plugin is the only package allowed to touch vllm (Phase 1+; currently docs-only).
+"vllm_plugin/**" = ["TID251"]
+"bench/**" = ["TID251"]
