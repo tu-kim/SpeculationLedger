@@ -1,0 +1,28 @@
+# I4 결정성 golden용 초소형 실험 — tests/test_i4_determinism.py가 사용한다.
+# 이 파일 또는 관련 코드가 바뀌어 golden이 달라지면 `make golden`으로 재생성하고
+# diff를 리뷰한 뒤 커밋한다.
+exp_id: synth_smoke
+gates: [G1, G2, G-R1]
+seed: 11
+budget: 8
+trace:
+  provenance: synthetic
+  paths: ["traces/synth/smoke.jsonl"]
+  synth:
+    seed: 11
+    repos: 1
+    sessions_per_repo: 2
+    turns_per_session: 3
+    files_per_repo: 2
+    file_lines: 6
+    line_len: 6
+proposers:
+  - {role: a, kind: ledger, name: a_ledger, store: {version: 2}}
+  - {role: b, kind: positive, name: b_positive, store: {version: 2}}
+  - {role: vanilla, kind: vanilla}
+thresholds:
+  assumed: true
+  g1_min_rate_order4_session: 0.10
+  g2_min_tau_ledger: 1.2
+  gr1_min_rel_gain: 0.0
+  gr1_min_seg_steps: 50

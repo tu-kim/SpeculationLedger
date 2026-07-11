@@ -1,0 +1,22 @@
+# [G3] hit-rate–size 곡선: 엔트리 수 cap(FIFO evict) sweep으로 메모리–적중 관계 측정.
+# g3_budget_bytes는 합성 trace 규모에 맞춰 축소되어 있다(실 trace에서는 64MiB 기준).
+exp_id: g3_hitrate
+gates: [G3]
+seed: 20260711
+budget: 8
+trace:
+  provenance: synthetic
+  paths: ["traces/synth/default.jsonl"]
+  synth:
+    seed: 20260711
+    repos: 2
+    sessions_per_repo: 4
+    turns_per_session: 8
+proposers: []
+size_sweep:
+  proposer: {kind: ledger, store: {version: 1}}
+  max_entries: [1000, 4000, 16000, 64000, 0]
+thresholds:
+  assumed: true
+  g3_budget_bytes: 4000000
+  g3_min_hit_frac: 0.8

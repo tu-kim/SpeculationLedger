@@ -1,0 +1,27 @@
+# [G2][G-R1] oracle replay: proposer 4종 (a)(a′)(b)(c) oracle τ + outcome annotation ablation.
+# (a) vs (b)가 G-R1(전제: outcome annotation의 가치)을 판정한다.
+# synthetic trace 기반 — 하네스 검증용 (DECISIONS A-3).
+exp_id: g2_oracle
+gates: [G1, G2, G-R1]
+seed: 20260711
+budget: 8
+trace:
+  provenance: synthetic
+  paths: ["traces/synth/default.jsonl"]
+  synth:
+    seed: 20260711
+    repos: 2
+    sessions_per_repo: 4
+    turns_per_session: 8
+proposers:
+  - {role: a, kind: ledger, name: a_ledger, store: {version: 2}}
+  - {role: a_prime, kind: dense, name: aprime_dense, window: 16, max_dist: 0.35}
+  - {role: b, kind: positive, name: b_positive, store: {version: 2}}
+  - {role: c, kind: recycle, name: c_recycle}
+  - {role: vanilla, kind: vanilla}
+thresholds:
+  assumed: true
+  g1_min_rate_order4_session: 0.30
+  g2_min_tau_ledger: 2.0
+  gr1_min_rel_gain: 0.10
+  gr1_min_seg_steps: 300
