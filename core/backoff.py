@@ -16,6 +16,8 @@ correction 분포는 별도 저장 없이 p_hat 그 자체다 (§3.1).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import NamedTuple
 
 from core.signature import MAX_ORDER
 from core.types import Posterior, PosteriorCand, q8_to_p
@@ -41,40 +43,63 @@ class BackoffParams:
         return BackoffParams(**d) if d else BackoffParams()
 
 
+@lru_cache(maxsize=32)
+def _decay_pows(
+    order_decay: float, scope_decay: float
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """pow LUT — lookup마다 소스별 float 거듭제곱을 상수화. 값은 직접 계산과 동일(I4)."""
+    return (
+        tuple(order_decay ** (MAX_ORDER - n) for n in range(MAX_ORDER + 1)),
+        tuple(scope_decay**d for d in range(8)),
+    )
+
+
 def lam(params: BackoffParams, match_len: int, scope_depth: int, count: int) -> float:
     """단일 보간 λ. 세 인자 모두에 단조: match_len↑ ⇒ λ↑, depth↑ ⇒ λ↓, count↑ ⇒ λ↑."""
-    w_order = params.order_decay ** (MAX_ORDER - match_len)
-    w_scope = params.scope_decay**scope_depth
-    w_count = count / (count + params.count_prior)
-    return w_order * w_scope * w_count
+    tbl_o, tbl_s = _decay_pows(params.order_decay, params.scope_decay)
+    return tbl_o[match_len] * tbl_s[scope_depth] * (count / (count + params.count_prior))
 
 
-@dataclass(frozen=True)
-class Source:
-    """blend 입력 1건 = (어느 차수/scope에서 매치됐나, 후보 통계)."""
+class Source(NamedTuple):
+    """blend 입력 1건 = (어느 차수/scope에서 매치됐나, 후보 통계).
+
+    total/total_acc는 store의 엔트리 캐시가 채우는 사전계산치다 — 미지정(-1)이면
+    cands에서 재계산하므로 직접 구성하는 테스트·참조 구현과 값이 동일하다.
+    """
 
     match_len: int
     scope_depth: int
     # 후보별 (tok, acc, rej, logp_q8)
     cands: tuple[tuple[int, int, int, int], ...]
+    total: int = -1  # Σ(acc+rej)
+    total_acc: int = -1  # Σacc
 
     def total_count(self) -> int:
-        return sum(a + r for _, a, r, _ in self.cands)
+        return self.total if self.total >= 0 else sum(a + r for _, a, r, _ in self.cands)
+
+    def total_acc_count(self) -> int:
+        return self.total_acc if self.total_acc >= 0 else sum(a for _, a, _, _ in self.cands)
 
 
 def blend(params: BackoffParams, sources: list[Source]) -> Posterior | None:
     if not sources:
         return None
 
+    tbl_o, tbl_s = _decay_pows(params.order_decay, params.scope_decay)
+    kp = params.count_prior
     weights: list[float] = []
     for s in sources:
-        weights.append(lam(params, s.match_len, s.scope_depth, s.total_count()))
+        c = s.total_count()
+        weights.append(tbl_o[s.match_len] * tbl_s[s.scope_depth] * (c / (c + kp)))
     w_sum = sum(weights)
     if w_sum <= 0.0:
         return None
 
+    beta_a = params.beta_a
+    beta_b = params.beta_b
     # tok → [Σw·freq, Σw_hi·acc_rate, Σw_hi·p̂, Σw_hi, Σsupport]
     acc_w: dict[int, list[float]] = {}
+    get_slot = acc_w.setdefault
     w_hi_sum = 0.0
     for s, w in zip(sources, weights):
         if w <= 0.0:
@@ -85,19 +110,21 @@ def blend(params: BackoffParams, sources: list[Source]) -> Posterior | None:
         # 소스 내부 p̂ 정규화 (top-k 잘림 보정: 소스 내 상대 질량만 신뢰)
         p_raw = [q8_to_p(q) for _, _, _, q in s.cands]
         z = sum(p_raw) or 1.0
-        total_acc = sum(a for _, a, _, _ in s.cands)
+        total_acc = s.total_acc_count()
         k_s = max(1, len(s.cands))
+        freq_den = total_acc + k_s * beta_a
         for (tok, a, r, _q), pr in zip(s.cands, p_raw):
-            freq = (a + params.beta_a) / (total_acc + k_s * params.beta_a)
-            acc_rate = (a + params.beta_a) / (a + r + params.beta_a + params.beta_b)
-            slot = acc_w.setdefault(tok, [0.0, 0.0, 0.0, 0.0, 0.0])
-            slot[0] += w * freq
-            slot[1] += w_hi * acc_rate
+            slot = get_slot(tok, [0.0, 0.0, 0.0, 0.0, 0.0])
+            slot[0] += w * ((a + beta_a) / freq_den)
+            # 주의: 분모의 덧셈 그룹핑을 기존과 동일하게 유지 (float 결합 순서 = 값 보존)
+            slot[1] += w_hi * ((a + beta_a) / (a + r + beta_a + beta_b))
             slot[2] += w_hi * (pr / z)
             slot[3] += w_hi
             # support = 최강 단일 소스의 관측 수. 같은 물리적 관측이 (차수×scope)개
             # 소스에 중복 계상되므로 합산하면 증거량이 ~21배 과대보고된다.
-            slot[4] = max(slot[4], a + r)
+            ar = a + r
+            if ar > slot[4]:
+                slot[4] = ar
 
     if not acc_w:
         return None

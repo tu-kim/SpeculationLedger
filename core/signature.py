@@ -21,6 +21,12 @@ _MULT = 0x9E3779B97F4A7C15
 _ORDER_SALT = tuple((0xA076_1D64_78BD_642F * (o + 1)) & U64_MASK for o in range(MAX_ORDER + 1))
 _SEG_SALT = tuple((0xE703_7ED1_A0B4_28DB * (s + 3)) & U64_MASK for s in range(4))
 
+# 핫루프 인라인용 공개 별칭 (store가 fold_key 호출 오버헤드를 제거할 때 사용;
+# 전개식의 스펙은 fold_key 그대로이며 차분 테스트가 동치를 보증한다)
+ORDER_SALTS = _ORDER_SALT
+SEG_SALTS = _SEG_SALT
+MIX_MULT = _MULT
+
 
 def fmix64(x: int) -> int:
     """splitmix64 finalizer — 상위/하위 비트 분산."""

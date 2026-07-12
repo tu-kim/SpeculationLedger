@@ -31,9 +31,18 @@ from dataclasses import dataclass, field
 
 from core.arena import Break, SpanArena, SpanEntry, SpanProposal
 from core.backoff import BackoffParams, Source, blend
-from core.signature import MAX_ORDER, MIN_ORDER, RollingSigStack, fmix64, fold_key
+from core.signature import (
+    MAX_ORDER,
+    MIN_ORDER,
+    ORDER_SALTS,
+    SEG_SALTS,
+    RollingSigStack,
+    fmix64,
+    fold_key,
+)
 from core.types import (
     U16_MAX,
+    U64_MASK,
     LedgerStats,
     Posterior,
     Segment,
@@ -147,38 +156,50 @@ class HotEntry:
     def merge_topk(self, ids: tuple[int, ...], q8s: tuple[int, ...], k_max: int) -> None:
         if not ids:
             return
+        cands = self.cands
         # coverage: 이번 관측 top-k 질량 중 저장분이 커버하는 비율 → EMA
-        covered = sum(1 for t in ids if t in self.cands)
+        covered = sum(1 for t in ids if t in cands)
         cov = covered / len(ids)
         self.cov_ema = 0.75 * self.cov_ema + 0.25 * cov
         # 절단분포의 음의 증거: 이번 top-k에 없는 기존 후보의 p̂는 감쇠(+1 nat).
         # 내용 드리프트(rename 등)에서 낡은 후보가 p̂ 순위를 계속 점유하는 것을 막는다 —
         # positive-only(b)에는 없는 outcome/logit 추적 경로다.
         obs = set(ids)
-        for t, c in self.cands.items():
-            if t not in obs and c[2] >= 0:
-                c[2] = min(255, c[2] + 16)
+        for t, c in cands.items():
+            q = c[2]
+            if q >= 0 and t not in obs:
+                c[2] = q + 16 if q < 240 else 255
+        cands_get = cands.get
         for t, q in zip(ids, q8s):
-            c = self.cands.get(t)
+            c = cands_get(t)
             if c is None:
-                if len(self.cands) >= self.k_cap:
+                if len(cands) >= self.k_cap:
                     if self.cov_ema < 0.9 and self.k_cap < k_max:
                         self.k_cap = min(k_max, self.k_cap * 2)
                     else:
                         continue  # 관측 카운트 있는 기존 후보를 topk 신규가 밀어내지 않는다
-                c = [0, 0, int(q)]
-                self.cands[t] = c
+                cands[t] = [0, 0, int(q)]
             else:
                 c[2] = int(q) if c[2] < 0 else (3 * c[2] + int(q)) >> 2
         self._src = None
 
-    def sources_tuple(self) -> tuple[tuple[int, int, int, int], ...]:
-        # q8 미관측(-1) 후보는 최저 확률로 취급 (255)
+    def sources_view(self) -> tuple[tuple[tuple[int, int, int, int], ...], int, int]:
+        """(cands 튜플, Σ(acc+rej), Σacc) — blend가 매 lookup마다 재합산하지 않도록
+        엔트리 변이 시점에만 재계산되는 캐시 뷰. q8 미관측(-1)은 최저 확률(255)로."""
         if self._src is None:
-            self._src = tuple(
+            cands = tuple(
                 (tok, a, r, q if q >= 0 else 255) for tok, (a, r, q) in self.cands.items()
             )
+            total = 0
+            total_acc = 0
+            for _, a, r, _q in cands:
+                total += a + r
+                total_acc += a
+            self._src = (cands, total, total_acc)
         return self._src
+
+    def sources_tuple(self) -> tuple[tuple[int, int, int, int], ...]:
+        return self.sources_view()[0]
 
     def total_count(self) -> int:
         return sum(a + r for a, r, _ in self.cands.values())
@@ -228,6 +249,16 @@ class LedgerStore:
         """sig_stack[i] ↔ 차수 MIN_ORDER+i, scope_stack[d] ↔ depth d (session=0)."""
         self._stats.lookups += 1
         p = self.params
+        seg_i = int(seg)
+        # fold_key 인라인 전개 (스펙: core.signature.fold_key — 차분 테스트가 동치 보증).
+        # scope⊕seg 부분합을 depth별로 사전계산해 probe당 XOR·mix만 남긴다.
+        seg_salt = SEG_SALTS[seg_i & 3]
+        bases = [
+            (depth, scope_id ^ seg_salt)
+            for depth, scope_id in enumerate(scope_stack)
+            if depth in p.scope_depths
+        ]
+        hot_get = self._hot.get
         sources: list[Source] = []
         for i, sig in enumerate(sig_stack):
             order = MIN_ORDER + i
@@ -235,20 +266,21 @@ class LedgerStore:
                 break  # 계약: sig_stack[i] ↔ 차수 MIN+i — 초과분은 무시
             if order not in p.orders:
                 continue
-            for depth, scope_id in enumerate(scope_stack):
-                if depth not in p.scope_depths:
-                    continue
-                e = self._hot.get(fold_key(sig, order, scope_id, int(seg)))
+            sig_o = sig ^ ORDER_SALTS[order]
+            for depth, base in bases:
+                x = sig_o ^ base
+                x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & U64_MASK
+                x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & U64_MASK
+                e = hot_get((x ^ (x >> 31)) & U64_MASK)
                 if e is None:
                     continue
                 if e.epoch != self._epoch_now(e.scope_id, e.dom):
                     self._stats.stale_skips += 1
                     continue
-                if e.seg != int(seg):
+                if e.seg != seg_i:
                     continue  # fold 충돌 가드
-                sources.append(
-                    Source(match_len=order, scope_depth=depth, cands=e.sources_tuple())
-                )
+                cands, total, total_acc = e.sources_view()
+                sources.append(Source(order, depth, cands, total, total_acc))
         post = blend(p.backoff, sources)
         if post is not None:
             self._stats.hits += 1
@@ -358,31 +390,40 @@ class LedgerStore:
 
         patch_key = 0
         patch_rank = (-1, -1)
+        k_max = p.k_max
+        code_seg = int(Segment.CODE)
         for pos in range(len(realized)):
             seg_p = seg_arr[min(pos, len(seg_arr) - 1)] if seg_arr else int(Segment.TEXT)
-            dom = ev.file_id if seg_p == int(Segment.CODE) else 0
+            dom = ev.file_id if seg_p == code_seg else 0
             tok = realized[pos]
             is_reject_pos = pos == ev.accepted_len and pos < draft_len
+            has_topk = pos < len(ev.topk_ids)
+            seg_salt = SEG_SALTS[seg_p & 3]
 
             stack = sigs.stack_list()
             for i, sig in enumerate(stack):
                 order = MIN_ORDER + i
                 if order not in p.orders:
                     continue
+                sig_o = sig ^ ORDER_SALTS[order]
                 for depth, sid in enumerate(scope_ids):
                     if depth not in p.scope_depths:
                         continue
-                    key = fold_key(sig, order, sid, seg_p)
+                    # fold_key 인라인 전개 (스펙: core.signature.fold_key)
+                    x = sig_o ^ sid ^ seg_salt
+                    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & U64_MASK
+                    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & U64_MASK
+                    key = (x ^ (x >> 31)) & U64_MASK
                     e = self._get_or_create(key, seg_p, dom, sid)
-                    e.update_realized(tok, p.k_max)
+                    e.update_realized(tok, k_max)
                     if is_reject_pos:
-                        e.update_rejected(ev.draft_ids[pos], p.k_max)
-                    if pos < len(ev.topk_ids):
-                        e.merge_topk(ev.topk_ids[pos], ev.topk_logp_q8[pos], p.k_max)
-                    if is_reject_pos and (order, -depth) > patch_rank:
-                        # 실제 probe된 조합 중 최장 차수·최심 tier의 correction 엔트리
-                        patch_rank = (order, -depth)
-                        patch_key = key
+                        e.update_rejected(ev.draft_ids[pos], k_max)
+                        if (order, -depth) > patch_rank:
+                            # 실제 probe된 조합 중 최장 차수·최심 tier의 correction 엔트리
+                            patch_rank = (order, -depth)
+                            patch_key = key
+                    if has_topk:
+                        e.merge_topk(ev.topk_ids[pos], ev.topk_logp_q8[pos], k_max)
 
             if p.version >= 2:
                 self._track_run(ev, sigs, seg_p, dom, tok, scope_ids)
