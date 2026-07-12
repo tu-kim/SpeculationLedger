@@ -34,6 +34,13 @@ class _RepoIndex:
         self.trained_ivf = False
         self.stream: list[int] = []  # repo 단위 realized corpus (세션 경계 넘어 연결)
         self.offsets: list[int] = []  # faiss id → stream 끝 위치
+        self._buf: list[np.ndarray] = []  # add 배치 버퍼 — 삽입 순서 보존, search 전 flush
+
+    def _flush(self) -> None:
+        if self._buf:
+            self.index.add(np.stack(self._buf))
+            self._buf.clear()
+            self._maybe_upgrade()
 
     def _maybe_upgrade(self) -> None:
         if not self.use_ivfpq or self.trained_ivf:
@@ -53,11 +60,13 @@ class _RepoIndex:
         self.trained_ivf = True
 
     def add(self, vec: np.ndarray, end_off: int) -> None:
-        self.index.add(vec.reshape(1, -1))
+        self._buf.append(vec)
         self.offsets.append(end_off)
-        self._maybe_upgrade()
+        if len(self._buf) >= 256:
+            self._flush()
 
     def search(self, vec: np.ndarray) -> tuple[float, int]:
+        self._flush()  # 검색 시점 인덱스 상태 = 무배치 구현과 동일 (결정성 I4)
         if self.index.ntotal == 0:
             return float("inf"), -1
         d, i = self.index.search(vec.reshape(1, -1), 1)
@@ -142,7 +151,7 @@ class DenseKeyProposer(BaseProposer):
                 idx.add(self._embed(tuple(window)), len(idx.stream) - 1)
 
     def stats(self) -> dict:
-        keys = sum(i.index.ntotal for i in self._by_repo.values())
+        keys = sum(i.index.ntotal + len(i._buf) for i in self._by_repo.values())
         toks = sum(len(i.stream) for i in self._by_repo.values())
         return {
             "keys": keys,

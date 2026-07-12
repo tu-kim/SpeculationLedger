@@ -48,49 +48,50 @@ def fold_key(sig: int, order: int, scope_id: int, seg: int) -> int:
 
 
 class RollingSigStack:
-    """마지막 MAX_ORDER 토큰의 ring buffer에서 차수 2..8 서명 스택을 유지.
+    """차수 1..MAX_ORDER 서명을 O(orders)/token으로 증분 유지.
 
-    push(tok) 후 stack()은 [(order, sig)]를 고차수→저차수로 반환한다.
-    구현은 ring 재계산(차수≤8이라 토큰당 ≤ 8+7+...+2 = 35 mult-add)이다.
-    네이티브 구현에서는 진짜 rolling(감산+곱셈)으로 대체 — 수치는 sig_of와 동일해야 하며
-    tests/test_signature.py가 동치성을 고정한다.
+    점화식: sig_o(t) = sig_{o-1}(t-1)·M + mix(tok_t)  (길이 o 창의 다항 해시 전개와 동치).
+    push당 곱셈 MAX_ORDER-1회뿐 — 창 재계산·감산·거듭제곱 테이블이 모두 불필요하다.
+    값은 비증분 기준 구현 sig_of와 정확히 일치한다 (tests/test_signature.py가 고정).
+    네이티브 포팅도 이 점화식을 그대로 쓴다 (D3).
+
+    주의: _sigs[o]는 스트림 길이 n ≥ o일 때만 유효하다 — stack*()이 노출을 차단한다.
     """
 
-    __slots__ = ("_ring", "_n")
+    __slots__ = ("_sigs", "_n")
 
     def __init__(self) -> None:
-        self._ring: list[int] = [0] * MAX_ORDER
+        self._sigs: list[int] = [0] * (MAX_ORDER + 1)  # index == order, [0] 미사용
         self._n = 0
 
     def push(self, tok: int) -> None:
-        self._ring[self._n % MAX_ORDER] = tok
+        m = fmix64(tok + 1)
+        s = self._sigs
+        for o in range(MAX_ORDER, 1, -1):  # 고차수부터 — 이전 step의 s[o-1]을 소비
+            s[o] = (s[o - 1] * _MULT + m) & U64_MASK
+        s[1] = m
         self._n += 1
 
     def push_many(self, toks: list[int] | tuple[int, ...]) -> None:
         for t in toks:
             self.push(t)
 
-    def _tail(self, order: int) -> list[int]:
-        n = self._n
-        return [self._ring[(n - order + i) % MAX_ORDER] for i in range(order)]
-
     def stack(self) -> list[tuple[int, int]]:
         """[(order, sig)] — 고차수 우선. 스트림 길이보다 큰 차수는 제외."""
-        out = []
         hi = min(self._n, MAX_ORDER)
-        for order in range(hi, MIN_ORDER - 1, -1):
-            out.append((order, sig_of(self._tail(order))))
-        return out
+        s = self._sigs
+        return [(order, s[order]) for order in range(hi, MIN_ORDER - 1, -1)]
 
     def stack_list(self) -> list[int]:
         """계약 §3.1 lookup의 sig_stack: list[u64]. index i ↔ 차수 MIN_ORDER+i
         (저차수 우선, 스트림이 짧으면 가능한 차수까지만)."""
         hi = min(self._n, MAX_ORDER)
-        return [sig_of(self._tail(order)) for order in range(MIN_ORDER, hi + 1)]
+        s = self._sigs
+        return [s[order] for order in range(MIN_ORDER, hi + 1)]
 
     def clone(self) -> "RollingSigStack":
         c = RollingSigStack()
-        c._ring = list(self._ring)
+        c._sigs = list(self._sigs)
         c._n = self._n
         return c
 

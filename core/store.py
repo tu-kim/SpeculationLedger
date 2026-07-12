@@ -76,9 +76,14 @@ class StoreParams:
 
 
 class HotEntry:
-    """cand 테이블 + 적응 k. 레이아웃 주석은 §3.1 native 사양(48–64B, k≤5 기준)."""
+    """cand 테이블 + 적응 k. 레이아웃 주석은 §3.1 native 사양(48–64B, k≤5 기준).
 
-    __slots__ = ("key", "seg", "dom", "scope_id", "epoch", "k_cap", "cov_ema", "cands")
+    _src는 sources_tuple() 캐시다 — 체인 확장이 harvest 사이에 같은 엔트리를 반복
+    probe하므로 값어치가 있다. cands를 이 클래스 밖에서 직접 변이하는 코드는
+    (compaction·white-box 테스트) 반드시 invalidate()를 호출해야 한다.
+    """
+
+    __slots__ = ("key", "seg", "dom", "scope_id", "epoch", "k_cap", "cov_ema", "cands", "_src")
 
     def __init__(self, key: int, seg: int, dom: int, scope_id: int, epoch: int, k_init: int):
         self.key = key
@@ -90,12 +95,17 @@ class HotEntry:
         self.cov_ema = 1.0
         # tok -> [acc u16, rej u16, logp q8 (-1=미관측)]
         self.cands: dict[int, list[int]] = {}
+        self._src: tuple[tuple[int, int, int, int], ...] | None = None
+
+    def invalidate(self) -> None:
+        self._src = None
 
     def reset(self, epoch: int, dom: int) -> None:
         self.cands.clear()
         self.epoch = epoch
         self.dom = dom
         self.cov_ema = 1.0
+        self._src = None
 
     def _evict_weakest(self, protect: int) -> None:
         victim, worst = None, None
@@ -126,11 +136,13 @@ class HotEntry:
         c = self._ensure(tok, k_max)
         if c[0] < U16_MAX:
             c[0] += 1
+        self._src = None
 
     def update_rejected(self, tok: int, k_max: int) -> None:
         c = self._ensure(tok, k_max)
         if c[1] < U16_MAX:
             c[1] += 1
+        self._src = None
 
     def merge_topk(self, ids: tuple[int, ...], q8s: tuple[int, ...], k_max: int) -> None:
         if not ids:
@@ -158,12 +170,15 @@ class HotEntry:
                 self.cands[t] = c
             else:
                 c[2] = int(q) if c[2] < 0 else (3 * c[2] + int(q)) >> 2
+        self._src = None
 
     def sources_tuple(self) -> tuple[tuple[int, int, int, int], ...]:
         # q8 미관측(-1) 후보는 최저 확률로 취급 (255)
-        return tuple(
-            (tok, a, r, q if q >= 0 else 255) for tok, (a, r, q) in self.cands.items()
-        )
+        if self._src is None:
+            self._src = tuple(
+                (tok, a, r, q if q >= 0 else 255) for tok, (a, r, q) in self.cands.items()
+            )
+        return self._src
 
     def total_count(self) -> int:
         return sum(a + r for a, r, _ in self.cands.values())
@@ -510,6 +525,7 @@ class LedgerStore:
                     dead.append(tok)
             for tok in dead:
                 del e.cands[tok]
+            e.invalidate()  # cands 직접 변이 — sources 캐시 무효화
             if e.cands:
                 e.k_cap = max(p.k_init, min(e.k_cap, p.k_max))
                 live_hot[key] = e

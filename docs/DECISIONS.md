@@ -32,9 +32,12 @@ vLLM `04d553f` 소스 실측으로 후보 3곳 특정 — `docs/HOOKS.md` §2.
 
 | 지표 | rolling stack | suffix automaton |
 |---|---|---|
-| μs/token (Python 참조 구현) | 11.49 | 0.66 |
-| 메모리 | **64 B 상수** (ring 8 tokens) | 2.27 MB / 60k tokens (101k states, 무한 성장) |
+| μs/token (Python 참조 구현) | 11.49 → **0.99** (증분 점화식 적용 후) | 0.63–0.66 |
+| 메모리 | **O(1) 상수** (차수별 sig 9슬롯) | 2.27 MB / 60k tokens (101k states, 무한 성장) |
 | 기능 | 고정 차수 2..8 서명 (store 키와 1:1) | 정확 최장 match + count |
+
+증분 점화식 `sig_o(t) = sig_{o-1}(t-1)·M + mix(tok_t)` (push당 곱셈 7회, 2026-07-12
+적용)로 Python에서도 SAM과 동급이 됐고, 네이티브 포팅도 이 형태를 그대로 쓴다.
 
 **결정: 온라인 store 키링은 rolling hash.** 근거: (i) store는 고정 차수 2..8 fold key만
 필요 — SAM의 가변 최장 match는 잉여, (ii) 메모리 O(1) vs 세션당 무한 성장(호스트 메모리

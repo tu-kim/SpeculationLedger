@@ -7,6 +7,7 @@ online harvester가 GPU에서 넘겨주는 값은 plain int/list로 정규화되
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -93,10 +94,15 @@ def q8_to_logp(q: int) -> float:
     return -q / _Q8_SCALE
 
 
+# blend가 lookup마다 후보×소스 횟수로 호출 — 256-엔트리 LUT로 exp를 상수화.
+# 값은 math.exp와 동일하므로 결과는 byte-동일하다 (I4).
+_Q8_P = tuple(math.exp(-q / _Q8_SCALE) for q in range(256))
+
+
 def q8_to_p(q: int) -> float:
     """q8 → 확률값 (exp). 후보 간 상대비교/정규화 전용."""
-    import math
-
+    if 0 <= q <= 255:
+        return _Q8_P[q]
     return math.exp(-q / _Q8_SCALE)
 
 
