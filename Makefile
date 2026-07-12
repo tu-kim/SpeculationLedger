@@ -2,17 +2,24 @@
 UV ?= uv run
 CONFIG_DIR := configs
 
-.PHONY: setup lint test golden sim-g1 sim-g2 sim-g3 sim-all bench-d3 \
+.PHONY: setup lint test perf ci golden sim-g1 sim-g2 sim-g3 sim-all bench-d3 \
         online-smoke bench-lite50 load-sweep clean
 
 setup:
 	uv sync --group dev
 
 lint:
-	$(UV) ruff check core sim analysis tests bench
+	$(UV) ruff check core sim analysis tests bench scripts
 
 test:
-	$(UV) pytest -q
+	$(UV) pytest -q -m "not perf"
+
+# 성능 리그레션 가드 (보정 단위 예산 + 비율 + 연산 카운트) → results/perf/perf.json
+perf:
+	$(UV) pytest -q -m perf -rA tests/test_perf_regression.py
+
+# 로컬에서 CI와 동일한 검증 (.github/workflows/ci.yml 미러)
+ci: lint test perf
 
 # --- Phase 0 (GPU 불필요) ---------------------------------------------------
 sim-g1:

@@ -35,6 +35,7 @@ testpaths = ["tests"]
 markers = [
     "online: requires GPU + vLLM serving stack (Phase 1+); skipped on this host",
     "slow: microbenchmarks and large synthetic runs",
+    "perf: performance regression guards (calibrated budgets; CI perf job)",
 ]
 
 [tool.ruff]

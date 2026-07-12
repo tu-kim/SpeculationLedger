@@ -1,0 +1,53 @@
+# SpecLedger CI — 머지 조건 (CLAUDE.md §9)
+# checks: lint + 불변식/단위 스위트 (I3·I4·I5 포함)
+# perf:   성능 리그레션 가드 (보정 단위 예산 — 러너 속도에 정규화) + 추이 아티팩트
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --group dev
+      - name: Lint (I5 banned-api 포함)
+        run: uv run ruff check core sim analysis tests bench scripts
+      - name: Tests (불변식 I3/I4/I5 + 단위 + 차분 + 코너)
+        run: uv run pytest -q -m "not perf"
+
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --group dev
+      - name: Performance regression guards
+        run: uv run pytest -q -m perf -rA tests/test_perf_regression.py
+      - name: Signature microbench (D3 추이)
+        run: uv run python -m sim.bench_d3 --tokens 30000 --out results/d3_bench
+      - name: Upload perf metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-metrics-${{ github.sha }}
+          path: |
+            results/perf/perf.json
+            results/d3_bench/bench.json
+          retention-days: 90

@@ -15,7 +15,9 @@ Speculation Ledger(검증 산출물을 host memory에 영속화하는 speculativ
 
 ```bash
 make setup     # uv sync
-make test      # 불변식 + 단위 테스트
+make test      # 불변식 + 단위 테스트 (perf 제외)
+make perf      # 성능 리그레션 가드 (보정 단위 예산) → results/perf/perf.json
+make ci        # lint + test + perf (.github/workflows/ci.yml 로컬 미러)
 make sim-all   # G1/G2/G3 gate 러너 (합성 trace 자동 생성) → results/<exp>/gates.json
 make bench-d3  # 서명 μbench (D3)
 ```
