@@ -157,14 +157,29 @@ class PosteriorCand:
 
 @dataclass(frozen=True)
 class Posterior:
-    """단일 (context, scope, seg) 지점의 blend된 사후 분포 (§3.1 lookup 반환형)."""
+    """단일 (context, scope, seg) 지점의 blend된 사후 분포 (§3.1 lookup 반환형).
 
-    cands: tuple[PosteriorCand, ...]  # p_acc·p_hat 결합 점수 내림차순
+    cands는 proposal 랭킹 점수(빈도×게이트된 p̂; DECISIONS A-8) 내림차순이다.
+    두 축을 구분해 쓴다:
+      - argmax()   : 다음 토큰 *제안* 순위 1위 (확장 정책용). 복합 랭킹의 top.
+      - correction(): greedy correction = p̂ argmax (§3.1/§3.4). 별도 필드 없이
+        p̂ 자체가 correction 분포이므로 cands 중 p_hat 최대를 돌려준다.
+    다봉 문맥에서 둘은 갈릴 수 있다 — 계약이 요구하는 correction 규칙은 후자다.
+    """
+
+    cands: tuple[PosteriorCand, ...]  # proposal 랭킹 점수 내림차순
     weight: float  # blend에 참여한 λ 질량 합 — 신뢰도 지표
     best_order: int  # 매치된 최장 suffix 차수 (진단/proposer 정책용)
 
     def argmax(self) -> PosteriorCand | None:
+        """제안 순위 1위 (복합 랭킹 top). proposer의 체인 확장이 쓴다."""
         return self.cands[0] if self.cands else None
+
+    def correction(self) -> PosteriorCand | None:
+        """greedy correction = p̂ argmax (§3.1). p̂ 동률은 tok로 결정 (I4)."""
+        if not self.cands:
+            return None
+        return max(self.cands, key=lambda c: (c.p_hat, -c.tok))
 
 
 @dataclass

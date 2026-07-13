@@ -128,12 +128,12 @@ class HotEntry:
         if victim is not None:
             del self.cands[victim]
 
-    def _ensure(self, tok: int, k_max: int) -> list[int]:
+    def _ensure(self, tok: int, k_max: int, cov_target: float = 0.9) -> list[int]:
         c = self.cands.get(tok)
         if c is None:
             if len(self.cands) >= self.k_cap:
                 # coverage 미달이면 k 확장 (§3.1 적응 확장), 아니면 최약체 축출
-                if self.cov_ema < 0.9 and self.k_cap < k_max:
+                if self.cov_ema < cov_target and self.k_cap < k_max:
                     self.k_cap = min(k_max, self.k_cap * 2)
                 else:
                     self._evict_weakest(protect=tok)
@@ -141,19 +141,21 @@ class HotEntry:
             self.cands[tok] = c
         return c
 
-    def update_realized(self, tok: int, k_max: int) -> None:
-        c = self._ensure(tok, k_max)
+    def update_realized(self, tok: int, k_max: int, cov_target: float = 0.9) -> None:
+        c = self._ensure(tok, k_max, cov_target)
         if c[0] < U16_MAX:
             c[0] += 1
         self._src = None
 
-    def update_rejected(self, tok: int, k_max: int) -> None:
-        c = self._ensure(tok, k_max)
+    def update_rejected(self, tok: int, k_max: int, cov_target: float = 0.9) -> None:
+        c = self._ensure(tok, k_max, cov_target)
         if c[1] < U16_MAX:
             c[1] += 1
         self._src = None
 
-    def merge_topk(self, ids: tuple[int, ...], q8s: tuple[int, ...], k_max: int) -> None:
+    def merge_topk(
+        self, ids: tuple[int, ...], q8s: tuple[int, ...], k_max: int, cov_target: float = 0.9
+    ) -> None:
         if not ids:
             return
         cands = self.cands
@@ -174,7 +176,7 @@ class HotEntry:
             c = cands_get(t)
             if c is None:
                 if len(cands) >= self.k_cap:
-                    if self.cov_ema < 0.9 and self.k_cap < k_max:
+                    if self.cov_ema < cov_target and self.k_cap < k_max:
                         self.k_cap = min(k_max, self.k_cap * 2)
                     else:
                         continue  # 관측 카운트 있는 기존 후보를 topk 신규가 밀어내지 않는다
@@ -391,6 +393,7 @@ class LedgerStore:
         patch_key = 0
         patch_rank = (-1, -1)
         k_max = p.k_max
+        cov_target = p.coverage_target
         code_seg = int(Segment.CODE)
         for pos in range(len(realized)):
             seg_p = seg_arr[min(pos, len(seg_arr) - 1)] if seg_arr else int(Segment.TEXT)
@@ -415,15 +418,15 @@ class LedgerStore:
                     x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & U64_MASK
                     key = (x ^ (x >> 31)) & U64_MASK
                     e = self._get_or_create(key, seg_p, dom, sid)
-                    e.update_realized(tok, k_max)
+                    e.update_realized(tok, k_max, cov_target)
                     if is_reject_pos:
-                        e.update_rejected(ev.draft_ids[pos], k_max)
+                        e.update_rejected(ev.draft_ids[pos], k_max, cov_target)
                         if (order, -depth) > patch_rank:
                             # 실제 probe된 조합 중 최장 차수·최심 tier의 correction 엔트리
                             patch_rank = (order, -depth)
                             patch_key = key
                     if has_topk:
-                        e.merge_topk(ev.topk_ids[pos], ev.topk_logp_q8[pos], k_max)
+                        e.merge_topk(ev.topk_ids[pos], ev.topk_logp_q8[pos], k_max, cov_target)
 
             if p.version >= 2:
                 self._track_run(ev, sigs, seg_p, dom, tok, scope_ids)
